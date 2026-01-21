@@ -2,168 +2,224 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 import numpy as np
+import matplotlib.patheffects as pe
 
-# --- CONFIGURAZIONE ESTETICA ---
+# --- AESTHETIC CONFIGURATION ---
 sns.set_theme(style="whitegrid")
-plt.rcParams.update({'font.size': 12})
-OUTPUT_FILE = 'results_final.csv'
+plt.rcParams.update({'font.size': 11, 'figure.dpi': 300})
+INPUT_FILE = 'results_final.csv'
+REPORT_FILE = 'tables_report.txt'
 
-def load_and_clean_data(filename):
-    # Leggiamo il CSV.
-    # NOTA: A causa del grep "DATA", la colonna "Category" nell'header corrisponde
-    # alla stringa "DATA" nelle righe. Dobbiamo sistemare i nomi delle colonne.
+def load_raw_data(filename):
+    """Loads raw data without aggregating."""
     try:
         df = pd.read_csv(filename)
     except FileNotFoundError:
-        print(f"Errore: Il file {filename} non esiste.")
+        print(f"Error: The file {filename} does not exist.")
         return None
 
-    # Rinominiamo le colonne per correggere lo slittamento dovuto al tag 'DATA'
-    # La struttura reale è: Tag, Implementation, Config, Time_ms, Bandwidth_GBs
-    df.columns = ['Tag', 'Implementation', 'Config', 'Time_ms', 'Bandwidth_GBs']
-
-    # Rimuoviamo eventuali spazi bianchi
     df['Implementation'] = df['Implementation'].str.strip()
     df['Config'] = df['Config'].str.strip()
+    return df
 
-    # Raggruppiamo per Implementation e Config facendo la MEDIA delle 5 run
-    df_avg = df.groupby(['Implementation', 'Config'])[['Time_ms', 'Bandwidth_GBs']].mean().reset_index()
-    return df_avg
+def get_averaged_df(df):
+    """Calculates the mean for reporting and bar plots."""
+    return df.groupby(['Implementation', 'Config'], as_index=False)[['Avg_Time_ms', 'Bandwidth_GBs']].mean()
 
-def plot_cpu_vs_gpu(df):
-    """Grafico 1: Confronto Abissale CPU vs GPU"""
-    # Selezioniamo i campioni rappresentativi
-    cpu_seq = df[df['Implementation'] == 'Sequential']
-    cpu_omp = df[df['Implementation'] == 'OpenMP']
-    gpu_best = df[df['Implementation'] == 'Texture'].min() # Prendiamo il caso migliore Texture
+def save_summary_txt(df_avg, filename):
+    """Saves the averaged data tables into a text file."""
+    with open(filename, 'w') as f:
+        f.write("=== REPORT GENERATO AUTOMATICAMENTE ===\n")
+        f.write("Valori medi calcolati su 5 ripetizioni.\n\n")
 
-    # Creiamo un DataFrame ridotto per il grafico
+        # 1. CPU vs GPU
+        f.write("-" * 40 + "\n1. DATI CONFRONTO CPU vs GPU\n" + "-" * 40 + "\n")
+        cpu_seq = df_avg[df_avg['Implementation'] == 'Sequential']
+        cpu_omp = df_avg[df_avg['Implementation'] == 'OpenMP']
+        gpu_naive = df_avg[df_avg['Implementation'] == 'Naive'].sort_values('Avg_Time_ms').head(1)
+        summary_1 = pd.concat([cpu_seq, cpu_omp, gpu_naive])
+        f.write(summary_1[['Implementation', 'Config', 'Avg_Time_ms']].to_string(index=False) + "\n\n")
+
+        # 2. Tuning
+        f.write("-" * 40 + "\n2. DATI TUNING (Top 3)\n" + "-" * 40 + "\n")
+        for strat in ['Naive', 'Shared', 'Texture']:
+            subset = df_avg[df_avg['Implementation'] == strat].sort_values('Avg_Time_ms').head(3)
+            f.write(f"\n--- {strat} ---\n")
+            f.write(subset[['Config', 'Avg_Time_ms', 'Bandwidth_GBs']].to_string(index=False))
+        f.write("\n\n")
+
+        # 3. Best Strategies
+        f.write("-" * 40 + "\n3. CONFRONTO MIGLIORI STRATEGIE\n" + "-" * 40 + "\n")
+        best_rows = []
+        for strat in ['Naive', 'Shared', 'Texture']:
+            subset = df_avg[df_avg['Implementation'] == strat]
+            if not subset.empty:
+                best_rows.append(subset.sort_values('Bandwidth_GBs', ascending=False).iloc[0])
+        df_best = pd.DataFrame(best_rows)
+        f.write(df_best[['Implementation', 'Config', 'Avg_Time_ms', 'Bandwidth_GBs']].to_string(index=False) + "\n")
+
+    print(f"-> Tabelle salvate in: {filename}")
+
+# --- PLOTTING FUNCTIONS ---
+
+def plot_cpu_vs_gpu(df_avg):
+    """Plot 1: Uses AVERAGED data for clean bars."""
+    print("-> Generating Plot 1: CPU vs GPU...")
+
+    cpu_seq = df_avg[df_avg['Implementation'] == 'Sequential'].iloc[0]
+    cpu_omp = df_avg[df_avg['Implementation'] == 'OpenMP'].iloc[0]
+    gpu_best = df_avg[~df_avg['Implementation'].str.contains('Streams')].sort_values('Avg_Time_ms').iloc[0]
+
     plot_data = pd.DataFrame({
-        'Method': ['CPU Sequential', 'CPU OpenMP (8 Thr)', 'GPU CUDA (Texture)'],
-        'Time_ms': [cpu_seq['Time_ms'].values[0], cpu_omp['Time_ms'].values[0], gpu_best['Time_ms']]
+        'Method': ['CPU Sequential', 'CPU OpenMP', f"GPU {gpu_best['Implementation']}"],
+        'Time_ms': [cpu_seq['Avg_Time_ms'], cpu_omp['Avg_Time_ms'], gpu_best['Avg_Time_ms']]
     })
 
-    # Calcolo Speedup rispetto al sequenziale
-    seq_time = plot_data.iloc[0]['Time_ms']
-    plot_data['Speedup'] = seq_time / plot_data['Time_ms']
+    base_time = plot_data.loc[0, 'Time_ms']
+    plot_data['Speedup'] = base_time / plot_data['Time_ms']
 
     plt.figure(figsize=(10, 6))
     ax = sns.barplot(x='Method', y='Time_ms', data=plot_data, palette=['#e74c3c', '#e67e22', '#2ecc71'])
-
-    # Scala Logaritmica perché la differenza è enorme
     ax.set_yscale("log")
-    plt.title('Performance Comparison: CPU vs GPU (Log Scale)', fontsize=15, weight='bold')
-    plt.ylabel('Execution Time per Image (ms) - Lower is Better')
+    plt.title('Execution Time: CPU vs GPU (Log Scale)', fontsize=14, weight='bold')
+    plt.ylabel('Time per Image (ms) - Lower is Better')
     plt.xlabel('')
 
-    # Annotazioni Speedup
-    for i, p in enumerate(ax.patches):
-        speedup = plot_data.iloc[i]['Speedup']
-        height = p.get_height()
-        ax.text(p.get_x() + p.get_width()/2., height * 1.1,
-                f'{speedup:.1f}x Speedup', ha="center", weight='bold', color='black')
-        ax.text(p.get_x() + p.get_width()/2., height * 0.6,
-                f'{height:.2f} ms', ha="center", color='white', weight='bold')
+    for i, row in plot_data.iterrows():
+        ax.text(i, row['Time_ms'] * 1.1, f"{row['Time_ms']:.2f} ms\n({row['Speedup']:.0f}x)",
+                ha='center', va='bottom', weight='bold', color='black')
 
-    plt.savefig('plot_1_cpu_vs_gpu.png', dpi=300)
-    print("-> Generato 'plot_1_cpu_vs_gpu.png'")
-    return plot_data
+    plt.tight_layout()
+    plt.savefig('1_cpu_vs_gpu.png')
 
-def plot_block_tuning(df):
-    """Grafico 2: Block Size Tuning e Coalescing"""
-    # Filtriamo solo Texture per vedere l'effetto dei blocchi
-    df_tune = df[df['Implementation'] == 'Texture'].copy()
+def plot_tuning(df_avg):
+    """Plot 2: Uses AVERAGED data for clean bars."""
+    print("-> Generating Plot 2: Block Size Tuning...")
 
-    # Ordiniamo per Config (solo estetica)
-    # df_tune = df_tune.sort_values('Time_ms')
+    target_impls = ['Naive', 'Shared', 'Texture']
+    df_tune = df_avg[df_avg['Implementation'].isin(target_impls)].copy()
 
-    plt.figure(figsize=(10, 6))
+    plt.figure(figsize=(14, 8))
+    hue_order = ['Naive', 'Shared', 'Texture']
 
-    # Evidenziamo il peggiore e il migliore
-    colors = ['#3498db'] * len(df_tune)
-    best_idx = df_tune['Time_ms'].idxmin()
-    worst_idx = df_tune['Time_ms'].idxmax()
+    ax = sns.barplot(x='Config', y='Avg_Time_ms', hue='Implementation',
+                     hue_order=hue_order, data=df_tune, palette='viridis')
 
-    # Troviamo l'indice posizionale per colorare le barre
-    # Nota: seaborn non rende facilissimo colorare condizionalmente, usiamo un trucco
-    palette = {}
-    for conf in df_tune['Config'].unique():
-        if conf == df_tune.loc[best_idx, 'Config']:
-            palette[conf] = '#2ecc71' # Verde (Best)
-        elif conf == df_tune.loc[worst_idx, 'Config']:
-            palette[conf] = '#e74c3c' # Rosso (Worst)
-        else:
-            palette[conf] = '#3498db' # Blu (Normal)
-
-    ax = sns.barplot(x='Config', y='Time_ms', data=df_tune, palette=palette)
-
-    plt.title('GPU Block Size Tuning: Impact of Memory Coalescing', fontsize=15, weight='bold')
+    plt.title('GPU Block Tuning: Execution Time Comparison', fontsize=16, weight='bold')
     plt.ylabel('Time (ms) - Lower is Better')
     plt.xlabel('Block Dimensions (WxH)')
-    plt.ylim(0, df_tune['Time_ms'].max() * 1.2)
+    plt.legend(title='Implementation', loc='upper left')
 
-    # Annotazione Coalescing sul peggiore
-    worst_val = df_tune.loc[worst_idx, 'Time_ms']
-    worst_conf = df_tune.loc[worst_idx, 'Config']
+    x_labels = [t.get_text() for t in ax.get_xticklabels()]
+    time_map = df_tune.set_index(['Implementation', 'Config'])['Avg_Time_ms'].to_dict()
 
-    # Cerchiamo la barra corrispondente al worst
-    # (Semplificazione: stampiamo i valori sopra le barre)
+    for i, container in enumerate(ax.containers):
+        impl_name = hue_order[i]
+        for j, bar in enumerate(container):
+            config_name = x_labels[j]
+            key = (impl_name, config_name)
+            if key in time_map:
+                val_ms = time_map[key]
+                height = bar.get_height()
+                limit_height = ax.get_ylim()[1] * 0.15
+
+                if height < limit_height:
+                    ax.text(bar.get_x() + bar.get_width()/2., height + (limit_height*0.1),
+                            f'{val_ms:.2f} ms', ha='center', va='bottom', fontsize=9, rotation=90, color='black', weight='bold')
+                else:
+                    ax.text(bar.get_x() + bar.get_width()/2., height / 2,
+                            f'{val_ms:.2f} ms', ha='center', va='center', fontsize=9, rotation=90, color='white', weight='bold',
+                            path_effects=[pe.withStroke(linewidth=2, foreground="black")])
+
+    plt.tight_layout()
+    plt.savefig('2_block_tuning.png')
+
+def plot_strategies(df_avg):
+    """Plot 3: Uses AVERAGED data."""
+    print("-> Generating Plot 3: Strategy Comparison...")
+
+    strategies = ['Naive', 'Shared', 'Texture']
+    best_rows = []
+    for strat in strategies:
+        subset = df_avg[df_avg['Implementation'] == strat]
+        if not subset.empty:
+            best_rows.append(subset.sort_values('Bandwidth_GBs', ascending=False).iloc[0])
+
+    df_best = pd.DataFrame(best_rows)
+
+    plt.figure(figsize=(8, 6))
+    ax = sns.barplot(x='Implementation', y='Bandwidth_GBs', data=df_best, palette='viridis')
+    plt.title('Best Kernel Efficiency per Strategy', fontsize=14, weight='bold')
+    plt.ylabel('Effective Bandwidth (GB/s) - Higher is Better')
+    plt.xlabel('Memory Strategy')
+    plt.ylim(0, df_best['Bandwidth_GBs'].max() * 1.15)
+
     for p in ax.patches:
-        ax.annotate(f'{p.get_height():.2f}', (p.get_x() + p.get_width() / 2., p.get_height()),
-                    ha = 'center', va = 'center', xytext = (0, 9), textcoords = 'offset points')
+        ax.annotate(f'{p.get_height():.1f} GB/s', (p.get_x() + p.get_width() / 2., p.get_height()),
+                    ha='center', va='bottom', weight='bold')
 
-    plt.savefig('plot_2_tuning.png', dpi=300)
-    print("-> Generato 'plot_2_tuning.png'")
+    plt.tight_layout()
+    plt.savefig('3_strategies.png')
 
-def plot_scalability(df):
-    """Grafico 3: Streams Scalability e PCIe Saturation"""
-    # Filtriamo le righe che iniziano con 'Streams_'
-    df_stream = df[df['Implementation'].str.contains('Streams')].copy()
+def plot_streams_contention(df_raw):
+    """
+    Plot 4: Uses RAW data to show Variance (Area).
+    Seaborn 'lineplot' automatically calculates mean (line) and CI (shaded area).
+    """
+    print("-> Generating Plot 4: Streams Scalability (with Variance Area)...")
 
-    # Estraiamo il numero di immagini dalla stringa 'Streams_10imgs' -> 10
-    # Modifica: in base al tuo CSV, 'Implementation' è tipo 'Streams_10imgs'
-    df_stream['Num_Images'] = df_stream['Implementation'].str.extract('(\d+)').astype(int)
+    df_st = df_raw[df_raw['Implementation'].str.contains('Streams')].copy()
+    df_st['Num_Images'] = df_st['Config'].str.extract('(\d+)').astype(int)
 
-    df_stream = df_stream.sort_values('Num_Images')
+    df_st['Version'] = df_st['Implementation'].replace({
+        'Streams': 'Optimized (Read-Only Cache)',
+        'Streams_Naive': 'Naive (Global Memory)'
+    })
 
     plt.figure(figsize=(10, 6))
 
-    # Linea principale
-    sns.lineplot(x='Num_Images', y='Bandwidth_GBs', data=df_stream, marker='o', linewidth=3, markersize=10, color='#8e44ad')
+    # NOTA: Qui passo df_st che contiene TUTTE le ripetizioni.
+    # errorbar='sd' mostra la Deviazione Standard (più stretta).
+    # errorbar=('ci', 95) mostra l'intervallo di confidenza (default).
+    # Lascio il default o 'sd' in base alla tua preferenza. Qui uso il default per vedere bene l'area.
+    sns.lineplot(x='Num_Images', y='Bandwidth_GBs', hue='Version', style='Version',
+                 markers=True, dashes=False, data=df_st, linewidth=3, markersize=10,
+                 palette=['#2ecc71', '#e74c3c'])
 
-    # Area di saturazione teorica PCIe (approx 12GB/s per PCIe 3.0 x16 in pratica)
-    plt.axhline(y=12, color='gray', linestyle='--', label='PCIe 3.0 x16 Practical Limit (~12 GB/s)')
+    plt.title('Pipeline Scalability: Impact of Memory Contention', fontsize=14, weight='bold')
+    plt.ylabel('System Throughput (GB/s)')
+    plt.xlabel('Batch Size (Number of Images)')
+    plt.grid(True, which='both', linestyle='--', linewidth=0.5)
 
-    plt.title('Throughput Scalability: CUDA Streams', fontsize=15, weight='bold')
-    plt.ylabel('Effective Bandwidth (GB/s)')
-    plt.xlabel('Number of Images in Batch')
-    plt.legend()
+    # Per calcolare il testo dell'annotazione, calcolo le medie al volo
+    means = df_st.groupby(['Implementation'])['Bandwidth_GBs'].max()
+    max_opt = means['Streams']
+    max_nai = means['Streams_Naive']
 
-    # Annotazioni
-    for index, row in df_stream.iterrows():
-        plt.text(row['Num_Images'], row['Bandwidth_GBs'] + 0.3, f"{row['Bandwidth_GBs']:.2f} GB/s",
-                 color='#8e44ad', weight='bold', ha='center')
+    if not np.isnan(max_opt) and not np.isnan(max_nai):
+        gap_pct = ((max_opt - max_nai) / max_nai) * 100
+        plt.text(50, (max_opt + max_nai)/2, f"  +{gap_pct:.1f}% Efficiency\n  via Cache usage",
+                 color='black', weight='bold', va='center')
 
-    plt.savefig('plot_3_scalability.png', dpi=300)
-    print("-> Generato 'plot_3_scalability.png'")
+    plt.legend(title='Stream Implementation')
+    plt.tight_layout()
+    plt.savefig('4_streams_contention.png')
 
-# --- MAIN ---
 if __name__ == "__main__":
-    df = load_and_clean_data(OUTPUT_FILE)
+    # 1. Carico i Dati Grezzi (Raw)
+    df_raw = load_raw_data(INPUT_FILE)
 
-    if df is not None:
-        print("=== GENERAZIONE GRAFICI ===")
-        # 1. CPU vs GPU
-        cpu_gpu_data = plot_cpu_vs_gpu(df)
+    if df_raw is not None:
+        # 2. Creo una versione mediata per Report e Barplots
+        df_avg = get_averaged_df(df_raw)
 
-        # 2. Tuning
-        plot_block_tuning(df)
+        # 3. Salvo Report
+        save_summary_txt(df_avg, REPORT_FILE)
 
-        # 3. Scalability
-        plot_scalability(df)
+        # 4. Genero Grafici (Barre usano Medie, Linee usano Raw per l'area)
+        plot_cpu_vs_gpu(df_avg)
+        plot_tuning(df_avg)
+        plot_strategies(df_avg)
+        plot_streams_contention(df_raw) # <-- Qui passo i raw data!
 
-        print("\n=== TABELLA RIASSUNTIVA (Copia-Incolla per Relazione) ===")
-        print(df.to_string(index=False))
-
-        print("\n=== SPEEDUP CALCOLATI ===")
-        print(cpu_gpu_data.to_string(index=False))
+        print("\nDone! Plots updated (Variance area restored in Plot 4).")
