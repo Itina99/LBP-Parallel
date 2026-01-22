@@ -37,7 +37,8 @@ The implementation explores several optimization strategies:
 * **`parallel_base.cu`**: Naive GPU implementation using global memory. Direct thread-to-pixel mapping serving as the baseline CUDA implementation.
 * **`parallel_shared.cu`**: Optimized GPU implementation using shared memory with halo loading to reduce global memory traffic.
 * **`parallel_texture.cu`**: GPU implementation utilizing read-only cache (`__ldg` intrinsic) for improved memory access patterns and caching.
-* **`parallel_stream.cu`**: Advanced GPU implementation with CUDA streams for asynchronous batch processing, overlapping compute and data transfer to maximize PCIe bandwidth utilization.
+* **`parallel_stream.cu`**: Advanced GPU implementation with CUDA streams for asynchronous batch processing, overlapping compute and data transfer to maximize PCIe bandwidth utilization. It uses the read-only cache optimization.
+* **`parallel_stream_naive.cu`**: A variant of the stream-based implementation with global memory usage.
 
 ### Build and Testing Files
 * **`CMakeLists.txt`**: CMake build configuration for compiling all CPU and GPU executables with proper CUDA architecture settings.
@@ -86,6 +87,7 @@ This will generate the following executables:
 - `Parallel_Shared` - GPU with shared memory optimization
 - `Parallel_Texture` - GPU with read-only cache optimization
 - `Parallel_streams` - GPU with CUDA streams for batch processing
+- `Parallel_streams_naive` - Stream-based GPU with global memory
 
 ### 2. Running Benchmarks
 The `benchmark.sh` script automates the testing process, running all implementations with different configurations and collecting performance metrics.
