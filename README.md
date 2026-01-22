@@ -117,7 +117,7 @@ This creates three visualization charts:
 ---
 ##📊 Performance Results
 On a reference NVIDIA GTX 1050 (Pascal), this implementation achieved:
-* Speedup: ~276x vs Sequential CPU.
-* Throughput: ~10.6 GB/s, effectively saturating the PCIe bandwidth using asynchronous batch processing.
+* Speedup: ~284x vs Sequential CPU.
+* Throughput: ~10.6 GB/s, effectively saturating the PCIe bandwidth using asynchronous batch processing with read only memory approach.
 
 
